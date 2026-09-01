@@ -1,0 +1,20 @@
+# Deploy su Render: New → Blueprint → collega questo repo/cartella
+services:
+  - type: web
+    name: biotitan-agent
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CRM_API_TOKEN
+        generateValue: true
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: MATCH_AUTOCONFIRM_THRESHOLD
+        value: "50"
+      - key: SCAN_INTERVAL_HOURS
+        value: "12"
