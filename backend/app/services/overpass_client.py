@@ -1,4 +1,4 @@
-"""Client Overpass/Nominatim per trovare aziende e POI in Puglia."""
+"""Client Overpass/Nominatim per trovare aziende e POI in Puglia - versione stabile."""
 from __future__ import annotations
 
 import logging
@@ -12,12 +12,10 @@ logger = logging.getLogger(__name__)
 OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
 ]
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 USER_AGENT = "BioTitan-CRM-Scraper/1.0 (lead acquisition)"
 
-# Tag OSM più comuni. Le chiavi devono corrispondere alle categorie inviate dal CRM.
 CATEGORIA_OSM: dict[str, list[str]] = {
     "edilizia": [
         'nwr["office"="construction_company"]["name"]',
@@ -25,46 +23,35 @@ CATEGORIA_OSM: dict[str, list[str]] = {
         'nwr["craft"="carpenter"]["name"]',
         'nwr["craft"="plumber"]["name"]',
         'nwr["craft"="electrician"]["name"]',
-        'nwr["craft"="roofer"]["name"]',
-        'nwr["craft"="stonemason"]["name"]',
-        'nwr["craft"="glazier"]["name"]',
-        'nwr["craft"="hvac"]["name"]',
         'nwr["shop"="hardware"]["name"]',
         'nwr["shop"="doityourself"]["name"]',
-        'nwr["shop"="building_materials"]["name"]',
-        'nwr["name"~"edil|costruzion|impresa edile|murator|serrament|cartongess|idraulic|elettric",i]',
+        'nwr["name"~"edil|costruzion|impresa edile|murator|serrament|idraulic|elettric",i]',
     ],
     "fotovoltaico": [
         'nwr["shop"="solar"]["name"]',
-        'nwr["craft"="solar_panel"]["name"]',
         'nwr["office"="energy"]["name"]',
-        'nwr["power"="generator"]["generator:source"="solar"]["name"]',
         'nwr["name"~"fotovolta|fotovoltaic|pannelli solari|energia solare|solar",i]',
     ],
     "pulizie": [
         'nwr["craft"="cleaner"]["name"]',
         'nwr["office"="cleaning"]["name"]',
-        'nwr["shop"="cleaning"]["name"]',
-        'nwr["name"~"pulizie|pulizia|sanificaz|igienizz|cleaning|facility",i]',
+        'nwr["name"~"pulizie|pulizia|sanificaz|igienizz|cleaning",i]',
     ],
     "imbarcazioni": [
         'nwr["shop"="boat"]["name"]',
-        'nwr["craft"="boatbuilder"]["name"]',
         'nwr["shop"="marine"]["name"]',
         'nwr["leisure"="marina"]["name"]',
-        'nwr["name"~"nautica|barca|barche|cantier|marine",i]',
+        'nwr["name"~"nautica|barca|cantier|marine",i]',
     ],
     "pavimentazioni": [
         'nwr["shop"="flooring"]["name"]',
         'nwr["shop"="tiles"]["name"]',
-        'nwr["craft"="tiler"]["name"]',
-        'nwr["name"~"paviment|piastrell|ceramic|parquet|marmo",i]',
+        'nwr["name"~"paviment|piastrell|ceramic|parquet",i]',
     ],
     "default": [
         'nwr["office"="company"]["name"]',
         'nwr["shop"]["name"]',
         'nwr["craft"]["name"]',
-        'nwr["industrial"]["name"]',
     ],
 }
 
@@ -74,33 +61,27 @@ def _ql_escape(value: str) -> str:
 
 
 async def _resolve_area_id(comune: Optional[str], provincia: str) -> Optional[int]:
-    """Usa Nominatim per ottenere la relazione amministrativa corretta."""
     if comune:
         q = f"{comune}, {provincia}, Puglia, Italy"
     else:
         q = f"{provincia}, Puglia, Italy"
-    params = {"q": q, "format": "jsonv2", "limit": 8, "countrycodes": "it"}
+    params = {"q": q, "format": "jsonv2", "limit": 5, "countrycodes": "it"}
     try:
-        async with httpx.AsyncClient(timeout=15.0, headers={"User-Agent": USER_AGENT}) as client:
+        async with httpx.AsyncClient(timeout=12.0, headers={"User-Agent": USER_AGENT}) as client:
             resp = await client.get(NOMINATIM_URL, params=params)
             resp.raise_for_status()
             rows = resp.json()
         wanted = _normalizza_testo(comune or provincia)
         for row in rows:
-            osm_type = row.get("osm_type")
-            osm_id = row.get("osm_id")
-            if osm_type != "relation" or not osm_id:
-                continue
-            name = _normalizza_testo(row.get("name") or row.get("display_name") or "")
-            if wanted and wanted not in name and name not in wanted:
-                continue
-            return int(osm_id)
-        # Se Nominatim non restituisce un nome perfetto, accetta la prima relazione.
+            if row.get("osm_type") == "relation" and row.get("osm_id"):
+                name = _normalizza_testo(row.get("name") or row.get("display_name") or "")
+                if wanted in name or name in wanted:
+                    return int(row["osm_id"])
         for row in rows:
             if row.get("osm_type") == "relation" and row.get("osm_id"):
                 return int(row["osm_id"])
     except Exception as exc:
-        logger.warning("Nominatim non disponibile per %s/%s: %s", provincia, comune or "*", exc)
+        logger.warning("Nominatim fallito: %s", exc)
     return None
 
 
@@ -109,7 +90,7 @@ def _normalizza_testo(value: str) -> str:
     return re.sub(r"[^a-z0-9àèéìòù' ]+", " ", value).strip()
 
 
-def _query_area(comune: Optional[str], provincia: str, tags: list[str], timeout: int = 60, area_id: Optional[int] = None) -> str:
+def _query_area(comune: Optional[str], provincia: str, tags: list[str], timeout: int = 50, area_id: Optional[int] = None) -> str:
     if area_id:
         area_filter = f"area({3600000000 + area_id})->.searchArea;"
     elif comune:
@@ -123,13 +104,12 @@ def _query_area(comune: Optional[str], provincia: str, tags: list[str], timeout:
 
 
 def _keyword_fallback_tags(categorie: list[str]) -> list[str]:
-    # Fallback leggero: cerca il nome dell'attività senza scaricare tutti i negozi della provincia.
     patterns = {
         "edilizia": "edil|costruzion|impresa edile|murator|serrament|idraulic|elettric",
         "fotovoltaico": "fotovolta|fotovoltaic|energia solare|pannelli solari|solar",
-        "pulizie": "pulizie|pulizia|sanificaz|igienizz|cleaning|facility",
-        "imbarcazioni": "nautica|cantier|barca|barche|marine",
-        "pavimentazioni": "paviment|piastrell|parquet|marmo|ceramic",
+        "pulizie": "pulizie|pulizia|sanificaz|igienizz|cleaning",
+        "imbarcazioni": "nautica|cantier|barca|marine",
+        "pavimentazioni": "paviment|piastrell|parquet|ceramic",
     }
     out = []
     for c in categorie:
@@ -175,7 +155,7 @@ async def _run_query(query: str) -> list[dict]:
     last_error = None
     for url in OVERPASS_URLS:
         try:
-            async with httpx.AsyncClient(timeout=75.0, headers={"User-Agent": USER_AGENT}) as client:
+            async with httpx.AsyncClient(timeout=90.0, headers={"User-Agent": USER_AGENT}) as client:
                 resp = await client.post(url, data={"data": query})
                 resp.raise_for_status()
                 data = resp.json()
@@ -186,7 +166,7 @@ async def _run_query(query: str) -> list[dict]:
     raise RuntimeError(f"Tutti gli endpoint Overpass non sono raggiungibili: {last_error}")
 
 
-async def cerca_aziende(provincia: str, comune: Optional[str] = None, categorie: Optional[list[str]] = None, max_results: int = 200) -> list[dict[str, Any]]:
+async def cerca_aziende(provincia: str, comune: Optional[str] = None, categorie: Optional[list[str]] = None, max_results: int = 150) -> list[dict[str, Any]]:
     cats = [str(c).lower().strip() for c in (categorie or []) if c]
     tags: list[str] = []
     for c in cats:
@@ -197,22 +177,20 @@ async def cerca_aziende(provincia: str, comune: Optional[str] = None, categorie:
 
     area_id = await _resolve_area_id(comune, provincia)
     query = _query_area(comune, provincia, tags, area_id=area_id)
+
     try:
         elements = await _run_query(query)
     except Exception:
-        # Seconda possibilità: query solo per parole chiave, molto più leggera.
         fallback_tags = _keyword_fallback_tags(cats)
         if not fallback_tags:
             raise
-        elements = await _run_query(_query_area(comune, provincia, fallback_tags, timeout=45, area_id=area_id))
+        elements = await _run_query(_query_area(comune, provincia, fallback_tags, timeout=40, area_id=area_id))
 
-    # Se la query specifica è valida ma non produce nulla, la causa più comune è il mapping OSM.
-    # Eseguiamo un fallback per nome/categoria prima di dichiarare zero risultati.
     if not elements:
         fallback_tags = _keyword_fallback_tags(cats)
         if fallback_tags:
             try:
-                elements = await _run_query(_query_area(comune, provincia, fallback_tags, timeout=45, area_id=area_id))
+                elements = await _run_query(_query_area(comune, provincia, fallback_tags, timeout=40, area_id=area_id))
             except Exception as exc:
                 logger.warning("Fallback keyword fallito: %s", exc)
 
