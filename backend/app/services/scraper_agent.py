@@ -136,7 +136,11 @@ async def esegui_scansione(
             comune=scansione.comune,
             categorie=scansione.categorie or [],
         )
-        logger.info("Scansione %s: %d risultati grezzi da Overpass", scansione_id, len(grezzi))
+        logger.info("Scansione %s: %d risultati grezzi dalle fonti OSM/Overpass", scansione_id, len(grezzi))
+        if not grezzi:
+            scansione.errore = "Ricerca completata ma nessuna azienda è stata restituita dalle fonti OpenStreetMap/Overpass per i filtri selezionati."
+            session.add(scansione)
+            session.commit()
 
         nuove = 0
         duplicate = 0
